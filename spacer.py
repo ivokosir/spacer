@@ -5,6 +5,7 @@ from gi.repository import Gtk
 from gi.repository import Gdk
 import os
 import subprocess
+import locale
 
 class File:
     def __init__(self, entry):
@@ -12,6 +13,7 @@ class File:
         self.name = entry.name
         self.is_dir = entry.is_dir()
         self.icon = 'folder' if self.is_dir else 'text-x-generic'
+        self.hidden = self.name.startswith('.')
 
     def rename(self, new_name):
         new_path = os.path.join(os.path.dirname(self.path), new_name)
@@ -30,11 +32,13 @@ class FileView(Gtk.TreeView):
         self.connect('row-activated', self.on_row_activated)
 
         self.treestore = Gtk.TreeStore(object)
+        self.treestore.set_sort_func(0, self.sort_by_name)
+        self.treestore.set_sort_column_id(0, Gtk.SortType.ASCENDING)
         self.set_model(self.treestore)
 
         self.file_name_column = Gtk.TreeViewColumn()
         file_type_renderer = Gtk.CellRendererPixbuf()
-        self.file_name_renderer = Gtk.CellRendererText(editable=False)
+        self.file_name_renderer = Gtk.CellRendererText()
         self.file_name_renderer.connect('edited', self.on_name_edit)
         self.file_name_column.pack_start(file_type_renderer, False)
         self.file_name_column.pack_start(self.file_name_renderer, False)
@@ -42,6 +46,7 @@ class FileView(Gtk.TreeView):
         self.file_name_column.set_cell_data_func(self.file_name_renderer, self.render_file_name)
         self.append_column(self.file_name_column)
 
+        self.show_hidden = False
         self.cwd = os.getcwd()
         self.refresh()
 
@@ -49,17 +54,20 @@ class FileView(Gtk.TreeView):
         if event.keyval == Gdk.KEY_Right:
             self.smart_expand()
             return True
-        elif event.keyval == Gdk.KEY_Left:
+        if event.keyval == Gdk.KEY_Left:
             self.smart_colapse()
             return True
-        elif event.keyval == Gdk.KEY_BackSpace:
+        if event.keyval == Gdk.KEY_BackSpace:
             self.refresh(os.path.dirname(self.cwd))
             return True
-        elif event.keyval == Gdk.KEY_F5:
+        if event.keyval == Gdk.KEY_F5:
             self.refresh()
             return True
-        elif event.keyval == Gdk.KEY_F2:
+        if event.keyval == Gdk.KEY_F2:
             self.rename()
+            return True
+        if event.keyval == Gdk.KEY_h and event.state & Gdk.ModifierType.CONTROL_MASK:
+            self.toggle_hidden()
             return True
         return False
 
@@ -98,7 +106,9 @@ class FileView(Gtk.TreeView):
     def read_dir(self, file, tree_iter):
         with os.scandir(file.path) as entries:
             for entry in entries:
-                self.treestore.append(tree_iter, [File(entry)])
+                file = File(entry)
+                if not file.hidden or self.show_hidden:
+                    self.treestore.append(tree_iter, [File(entry)])
 
     def on_row_activated(self, widget, path, col):
         file = self.treestore[path][0]
@@ -153,10 +163,11 @@ class FileView(Gtk.TreeView):
         with os.scandir(self.cwd) as entries:
             for entry in entries:
                 file = File(entry)
-                child_iter = self.treestore.append(None, [file])
-                if file.is_dir:
-                    self.read_dir(file, child_iter)
-                maybe_open_or_select(file, child_iter)
+                if not file.hidden or self.show_hidden:
+                    child_iter = self.treestore.append(None, [file])
+                    if file.is_dir:
+                        self.read_dir(file, child_iter)
+                    maybe_open_or_select(file, child_iter)
 
         new_selected_path = self.get_cursor().path
         if new_selected_path is None:
@@ -169,6 +180,16 @@ class FileView(Gtk.TreeView):
         self.file_name_renderer.set_property('editable', True)
         self.grab_focus()
         self.set_cursor_on_cell(path, self.file_name_column, self.file_name_renderer, True)
+
+    def sort_by_name(self, model, iter_a, iter_b, x):
+        a = model[iter_a][0].path
+        b = model[iter_b][0].path
+        return locale.strcoll(a, b)
+
+    def toggle_hidden(self):
+        self.show_hidden = not self.show_hidden
+        self.refresh()
+
 
 def main():
     fileview = FileView()
