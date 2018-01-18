@@ -53,7 +53,7 @@ class FileView(Gtk.TreeView):
             #self.refresh()
             return True
         if event.keyval == Gdk.KEY_F2:
-            #self.rename()
+            self.rename()
             return True
         if event.state == Gdk.ModifierType.CONTROL_MASK:
             if event.keyval == Gdk.KEY_h:
@@ -94,11 +94,17 @@ class FileView(Gtk.TreeView):
         file = model[iter][0]
         renderer.set_property('text', file.name)
 
-    def on_name_edit(self, renderer, path, new_text):
+    def rename(self):
+        path = self.get_cursor().path
+        self.file_name_renderer.set_property('editable', True)
+        self.grab_focus()
+        self.set_cursor_on_cell(path, self.file_name_column, self.file_name_renderer, True)
+
+    def on_name_edit(self, renderer, path, new_name):
         renderer.set_property('editable', False)
-        file = self.filemodel[path][0]
-        file.rename(new_text)
-        self.refresh()
+        ok, msg = self.filemodel.rename(path, new_name)
+        if not ok:
+            self.show_error(msg)
 
     def refresh(self, new_cwd=None):
         opened = [self.cwd]
@@ -140,12 +146,6 @@ class FileView(Gtk.TreeView):
             first = self.filemodel.get_iter_first()
             if first:
                 self.set_cursor(self.filemodel.get_path(first), None)
-
-    def rename(self):
-        path = self.get_cursor().path
-        self.file_name_renderer.set_property('editable', True)
-        self.grab_focus()
-        self.set_cursor_on_cell(path, self.file_name_column, self.file_name_renderer, True)
 
     def sort_by_name(self, model, iter_a, iter_b, x):
         a = model[iter_a][0].path
@@ -190,15 +190,18 @@ class FileView(Gtk.TreeView):
                 self.expand_to_path(result)
                 self.set_cursor(result, None, False)
         else:
-            dialog = Gtk.MessageDialog(
-                parent=self.get_toplevel(),
-                flags=Gtk.DialogFlags.MODAL,
-                type=Gtk.MessageType.ERROR,
-                buttons=Gtk.ButtonsType.CLOSE,
-                message_format=result
-            )
-            dialog.run()
-            dialog.destroy()
+            self.show_error(result)
+
+    def show_error(self, msg):
+        dialog = Gtk.MessageDialog(
+            parent=self.get_toplevel(),
+            flags=Gtk.DialogFlags.MODAL,
+            type=Gtk.MessageType.ERROR,
+            buttons=Gtk.ButtonsType.CLOSE,
+            message_format=msg
+        )
+        dialog.run()
+        dialog.destroy()
 
 
 def main():
