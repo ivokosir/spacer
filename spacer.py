@@ -26,7 +26,12 @@ class FileView(Gtk.TreeView):
         self.filemodel = FileModel('/home/ivo/spacer/test')
         self.set_model(self.filemodel)
 
-        self.file_name_column = Gtk.TreeViewColumn()
+        self.file_name_column = Gtk.TreeViewColumn('Name')
+        self.file_name_column.set_sort_column_id(0)
+        #self.file_name_column.set_sort_indicator(True)
+        #self.file_name_column.set_clickable(True)
+        #self.file_name_column.connect('clicked', self.column_clicked)
+
         file_type_renderer = Gtk.CellRendererPixbuf()
         self.file_name_renderer = Gtk.CellRendererText()
         self.file_name_renderer.connect('edited', self.on_name_edit)
@@ -147,6 +152,14 @@ class FileView(Gtk.TreeView):
             if first:
                 self.set_cursor(self.filemodel.get_path(first), None)
 
+    def column_clicked(self, column):
+        order = column.get_sort_order()
+        if order == Gtk.SortType.ASCENDING:
+            order = Gtk.SortType.DESCENDING
+        else:
+            order = Gtk.SortType.ASCENDING
+        column.set_sort_order(order)
+
     def sort_by_name(self, model, iter_a, iter_b, x):
         a = model[iter_a][0].path
         b = model[iter_b][0].path
@@ -167,13 +180,14 @@ class FileView(Gtk.TreeView):
 
         if dst:
             path, pos = dst
+            indices = path.get_indices()
             is_into = pos in [
                 Gtk.TreeViewDropPosition.INTO_OR_BEFORE,
                 Gtk.TreeViewDropPosition.INTO_OR_AFTER
             ]
-            if is_into: path.down()
+            if not is_into: indices.pop()
         else:
-            path = Gtk.TreePath.new_first()
+            indices = []
 
         action = context.get_selected_action()
 
@@ -183,13 +197,13 @@ class FileView(Gtk.TreeView):
             return
         src_filepath = urllib.request.url2pathname(urllib.parse.urlparse(uris[0]).path)
 
-        ok, delete, result = self.filemodel.custom_drag_data_received(path, src_filepath, action)
-        context.finish(ok, delete, time)
+        ok, delete, result = self.filemodel.custom_drag_data_received(indices, src_filepath, action)
         if ok:
             if result:
                 self.expand_to_path(result)
                 self.set_cursor(result, None, False)
-        else:
+        context.finish(ok, delete, time)
+        if not ok:
             self.show_error(result)
 
     def show_error(self, msg):
