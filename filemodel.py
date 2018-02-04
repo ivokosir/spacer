@@ -24,6 +24,9 @@ class File:
     def update_is_dir(self):
         self.is_dir = os.path.isdir(self.path)
 
+    def is_hidden(self):
+        return self.name.startswith('.')
+
     def rename(self, new_name):
         new_path = os.path.join(os.path.dirname(self.path), new_name)
         try:
@@ -48,12 +51,6 @@ class File:
             children = []
         return children
 
-    def __str__(self):
-        return self.path
-
-    def __repr__(self):
-        return "File('" + self.path + "')"
-
 
 class FileModel(
         GObject.GObject, Gtk.TreeModel, Gtk.TreeSortable,
@@ -62,15 +59,50 @@ class FileModel(
     def __init__(self, dir):
         GObject.GObject.__init__(self)
 
-        self.sort_order = Gtk.SortType.ASCENDING
-        self.sort_func = lambda m, a, b: locale.strcoll(m[a][0].path, m[b][0].path)
+        self.do_refresh = lambda: (None, [])
+        self.on_refresh = lambda selected, opened: None
 
-        self.stamp = 0
+        self.show_hidden = False
+        self.sort_order = Gtk.SortType.ASCENDING
+
+        self.refresh(dir)
+
+    def refresh(self, new_path=None):
+        if new_path is None: new_path = self.files[0].path
+
+        selected, opened = self.do_refresh()
+
+        def get_filepath_from_path(path):
+            if path is None: return None
+            indices = path.get_indices()
+            id = self.get_id_from_indices(indices) if indices else 0
+            if id is None: return None
+            return self.files[id].path
+
+        selected = get_filepath_from_path(selected)
+        opened = [get_filepath_from_path(path) for path in opened]
+        opened = [o for o in opened if o]
 
         self.files = []
-        root = File(None, dir, is_dir=True)
+        root = File(None, new_path, is_dir=True)
         self.add_files(root)
         self.update_children(root)
+
+        def get_path_from_filepath(filepath):
+            if filepath is None: return None
+            file = self.get_file_from_filepath(filepath)
+            if file is None or file.id == 0: return None
+            return self.get_path_from_id(file.id)
+
+        selected = get_path_from_filepath(selected)
+        opened = [get_path_from_filepath(o) for o in opened]
+        opened = [o for o in opened if o]
+
+        self.on_refresh(selected, opened)
+
+    def toggle_hidden(self):
+        self.show_hidden = not self.show_hidden
+        self.refresh()
 
     def add_files(self, *files):
         first_id = len(self.files)
@@ -78,31 +110,40 @@ class FileModel(
             file.id = first_id + i
         self.files.extend(files)
 
-    def update_children(self, file):
-        if not file.is_dir or file.child_ids is not None: return
+    def update_children(self, file, *, force_update=False):
+        if not file.is_dir: return
+        if file.child_ids is not None and not force_update: return
 
-        children = file.list()
-        self.add_files(*children)
-        file.child_ids = [child.id for child in children]
-        self.sort(file)
+        if file.child_ids is None:
+            children = file.list()
+            self.add_files(*children)
+            file.child_ids = [child.id for child in children]
+
+        def key(id):
+            return locale.strxfrm(self.files[id].path)
+        reverse = self.sort_order == Gtk.SortType.DESCENDING
+        file.child_ids = list(sorted(file.child_ids, key=key, reverse=reverse))
+
+        file.child_ids = [
+            c for c in file.child_ids
+            if self.show_hidden or not self.files[c].is_hidden()
+        ]
 
     def file_id_is_valid(self, id):
         return (id is not None) and (id > 0 and id < len(self.files))
 
     def iter_is_valid(self, iter):
-        return iter and (iter.stamp == self.stamp and self.file_id_is_valid(iter.user_data))
+        return iter and self.file_id_is_valid(iter.user_data)
 
     def new_iter(self, id, iter=None):
         if not self.file_id_is_valid(id): return None
 
-        if iter is None:
-            iter = Gtk.TreeIter()
-            iter.stamp = self.stamp
+        if iter is None: iter = Gtk.TreeIter()
         iter.user_data = id
         return iter
 
     def with_iter(self, get_id, iter, fallback=False):
-        if iter is None and fallback:
+        if (iter is None or iter.user_data == 0) and fallback:
             id = 0
         elif self.iter_is_valid(iter):
             id = iter.user_data
@@ -114,16 +155,18 @@ class FileModel(
         iter = self.new_iter(new_id, iter)
         return (True, iter) if iter else (False, None)
 
-    def get_file_from_filepath(self, filepath, file=None):
+    def get_file_from_filepath(self, filepath, *, file=None):
         if file is None: file = self.files[0]
 
         if os.path.commonpath([file.path, filepath]) != file.path: return None
         if file.path == filepath: return file
 
+        self.update_children(file)
+
         if file.child_ids == None: return None
         for id in file.child_ids:
             child = self.files[id]
-            child = self.get_file_from_filepath(filepath, child)
+            child = self.get_file_from_filepath(filepath, file=child)
             if child is not None: return child
         return None
 
@@ -201,7 +244,7 @@ class FileModel(
         return self.get_path_from_id(iter.user_data)
 
     def do_get_value(self, iter, column):
-        if not self.iter_is_valid(iter): None
+        if not self.iter_is_valid(iter): return None
         return self.files[iter.user_data]
 
     def do_get_column_type(self, column):
@@ -215,10 +258,27 @@ class FileModel(
 
     def rename(self, path, new_name):
         file = self[path][0]
-        ok, msg = file.rename(new_name)
+        ok, ret = file.rename(new_name)
+
         if ok:
-            self.row_changed(path, self.new_iter(file.id))
-        return (ok, msg)
+            parent = self.files[file.parent_id]
+            self.update_children(parent, force_update=True)
+            self.row_deleted(path)
+
+            if not self.show_hidden and file.is_hidden():
+                if file.parent_id != 0:
+                    iter = self.new_iter(file.parent_id)
+                    path = self.get_path_from_id(file.parent_id)
+                    self.row_has_child_toggled(path, iter)
+                return (True, None)
+
+            path = self.get_path_from_id(file.id)
+            iter = self.new_iter(file.id)
+            self.row_inserted(path, iter)
+            self.row_has_child_toggled(path, iter)
+            ret = path
+
+        return (ok, ret)
 
     def custom_drag_data_received(self, indices, src_filepath, action):
         is_move = action == Gdk.DragAction.MOVE
@@ -248,19 +308,13 @@ class FileModel(
                     shutil.copytree(src_filepath, dst_filepath, copy_function=shutil.copyfile)
         except Exception as e: return (False, False, str(e))
 
-        if is_move:
-            file = self.get_file_from_filepath(src_filepath)
-            file.parent_id = parent_id
-            file.path = dst_filepath
-            file.update_name()
-            file.update_is_dir()
-        else:
-            file = File(parent_id, dst_filepath)
-            self.add_files(file)
+        file = File(parent_id, dst_filepath)
+        if not self.show_hidden and file.is_hidden(): return (True, is_move, path)
+        self.add_files(file)
 
         id = file.id
         parent.child_ids.append(id)
-        self.sort(parent)
+        self.update_children(parent)
 
         path = self.get_path_from_id(id)
         iter = self.new_iter(id)
@@ -292,72 +346,13 @@ class FileModel(
     def do_row_drop_possible(self, path, selection):
         return True
 
-    def sort(self, file, *, emit_signal=False, recursive=False):
-        if not file.child_ids: return
-
-        def cmp(fst, snd):
-            _, fst_id = fst
-            _, snd_id = snd
-            fst_iter = self.new_iter(fst_id)
-            snd_iter = self.new_iter(snd_id)
-
-            if self.sort_order == Gtk.SortType.ASCENDING:
-                a, b = (fst_iter, snd_iter)
-            elif self.sort_order == Gtk.SortType.DESCENDING:
-                b, a = (fst_iter, snd_iter)
-
-            return self.sort_func(self, a, b)
-
-        sort_key = functools.cmp_to_key(cmp)
-
-        sorted_with_i = list(sorted(enumerate(file.child_ids), key=sort_key))
-        file.child_ids = [child for _, child in sorted_with_i]
-        reordered_ids = [i for i, _ in sorted_with_i]
-
-        if emit_signal:
-            if file.id != 0:
-                path = self.get_path_from_id(file.id)
-                iter = self.new_iter(file.id)
-            else:
-                path = Gtk.TreePath()
-                iter = None
-            self.rows_reordered(path, iter, reordered_ids)
-
-        if recursive:
-            for child_id in file.child_ids:
-                child = self.files[child_id]
-                self.sort(child, emit_signal=emit_signal, recursive=recursive)
-
     def do_get_sort_column_id(self):
-        print('get', 0, self.sort_order)
         return (True, 0, self.sort_order)
 
     def do_has_default_sort_func(self):
         return False
 
-    def do_set_default_sort_func(self, sort_func, user_data):
-        pass
-
     def do_set_sort_column_id(self, sort_column_id, order):
         self.sort_order = order
-        self.sort(self.files[0], emit_signal=True, recursive=True)
+        self.refresh()
         self.sort_column_changed()
-        print('set', sort_column_id, self.sort_order)
-
-    def do_set_sort_func(self, sort_column_id, sort_func, user_data):
-        self.sort_func = lambda model, a, b: sort_func(model, a, b, user_data)
-
-    def do_sort_column_changed(self):
-        print('do_sort_column_changed')
-
-#    def do_row_changed(self, path, iter):
-#        pass
-
-#    def do_row_deleted(self, path):
-#        pass
-
-#    def do_row_has_child_toggled(self, path, iter):
-#        pass
-
-#    def do_row_inserted(self, path, iter):
-#        pass
