@@ -2,7 +2,7 @@
 import gi
 
 gi.require_version('Gtk', '3.0')
-from gi.repository import Gtk
+from gi.repository import Gtk, Gdk
 from fileview import FileView
 
 
@@ -19,8 +19,10 @@ def main():
     scrolledwindow = ScrolledWindow()
     scrolledwindow.add(fileview)
     window = Gtk.Window(title='Spacer')
+    window.set_type_hint(Gdk.WindowTypeHint.DIALOG)
     window.connect('delete-event', Gtk.main_quit)
     window.add(scrolledwindow)
+    gdk_window = window.get_window()
     window.show_all()
 
     Gtk.main()

@@ -87,6 +87,7 @@ class FileView(Gtk.TreeView):
             self.filemodel.refresh(os.getcwd())
         else:
             subprocess.Popen(['xdg-open', file.path])
+            Gtk.main_quit()
 
     def do_refresh(self):
         selected = self.get_cursor().path
